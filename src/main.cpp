@@ -217,6 +217,21 @@ void setupHardware() {
     CCL.CTRLA = 0;
 }
 
+void loadSettings() {
+   const uint16_t MAGIC = 0xC0DE;
+
+    eeprom_read_block(&settings, 0, sizeof(settings));
+    if (settings.magic != MAGIC) { // load defaults
+        settings.magic = MAGIC;
+        settings.bandgap = REFERENCE_VOLTAGE;
+        generateUID(settings.id);
+        eeprom_write_block(&settings, 0, sizeof(settings));
+    }
+
+    // Update state topic id
+    memcpy(state_topic + sizeof(state_topic) - sizeof(settings.id) - 1, settings.id, sizeof(settings.id));
+}
+
 // Counter for tracking identification delay, preserved between resets
 uint16_t ident_counter __attribute__((section(".noinit")));
 uint16_t update_counter;
@@ -231,6 +246,7 @@ void setup() {
 
     setupHardware();
     setupRTC_PIT();
+    loadSettings();
     setupRadio();
 
     while(!sensor.begin()) {
@@ -238,19 +254,7 @@ void setup() {
     };
     sensor.setSampling(MODE_FORCED, SAMPLING_X2, SAMPLING_X16, FILTER_OFF, STANDBY_MS_1);
 
-    const uint16_t MAGIC = 0xC0DE;
-
-    eeprom_read_block(&settings, 0, sizeof(settings));
-    if (settings.magic != MAGIC) { // load defaults
-        settings.magic = MAGIC;
-        settings.bandgap = REFERENCE_VOLTAGE;
-        generateUID(settings.id);
-        eeprom_write_block(&settings, 0, sizeof(settings));
-    }
-
     battery_voltage_mv = getBatteryVoltage();
-    // Update state topic id
-    memcpy(state_topic + sizeof(state_topic) - sizeof(settings.id) - 1, settings.id, sizeof(settings.id));
 
     update_counter = isExternalReset ? 0 : START_DELAY_PERIOD;
     if (isExternalReset) {
