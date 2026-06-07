@@ -7,7 +7,7 @@
 #define NETWORKID   42          // Must match the receiver/gateway
 #define GATEWAYID   1           // ID of the gateway/receiver we send to
 #define FREQUENCY   RF69_433MHZ
-const char ENCRYPTKEY[16] = "MQTTGateway_42"; // Encryption key (NULL = no encryption)
+const char ENCRYPTKEY[17] = { "MQTTGateway_42MY" }; // Encryption key (NULL = no encryption)
 
 constexpr uint16_t minutes(uint32_t m) {
     return m * 60;
