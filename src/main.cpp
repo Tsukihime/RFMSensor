@@ -174,8 +174,9 @@ void sleep_delay(uint16_t seconds) {
 }
 
 void setupRadio() {
-    while(!radio.initialize(FREQUENCY, NODEID, NETWORKID));
-    radio.setPowerLevel(31);
+    while(!radio.initialize(FREQUENCY, NODEID, NETWORKID))
+        sleep_delay(30);
+    radio.setPowerLevel(20);
     radio.encrypt(ENCRYPTKEY);
     //radio.setFrequency(433920000); //set frequency to some custom frequency
     radio.sleep();

@@ -19,7 +19,7 @@ constexpr uint16_t hours(uint32_t h) {
 
 const uint16_t IDENT_PERIOD = hours(12);
 const uint16_t UPDATE_PERIOD = minutes(5);
-const uint16_t START_DELAY_PERIOD = minutes(3);
+const uint16_t START_DELAY_PERIOD = minutes(1);
 const uint16_t REFERENCE_VOLTAGE = 1100;
 
 #define PLACEHOLDER "\xff\xff\xff\xff\xff\xff"
