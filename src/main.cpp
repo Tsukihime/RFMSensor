@@ -251,7 +251,7 @@ void setup() {
     setupRadio();
 
     while(!sensor.begin()) {
-        delay(10);
+        sleep_delay(1);
     };
     sensor.setSampling(MODE_FORCED, SAMPLING_X2, SAMPLING_X16, FILTER_OFF, STANDBY_MS_1);
 
@@ -266,9 +266,9 @@ void setup() {
 }
 
 void loop() {
-    setupRadio();
     if (ident_counter == 0) {
         ident_counter = IDENT_PERIOD;
+        setupRadio();
         identify();
     }
 
