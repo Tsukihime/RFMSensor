@@ -73,22 +73,11 @@ uint8_t calcBatteryLevel(uint16_t voltage_mv) {
 }
 
 uint8_t renderTemplate(const char* _template, uint16_t index) {
-    char c = pgm_read_byte(&_template[index]);
-    if (c != PLACEHOLDER_CHAR) return c;
-
-    uint8_t offset = 0;
-    do {
-        if(index == 0)
-            break;
-
-        char prev = pgm_read_byte(&_template[--index]);
-        if (prev != PLACEHOLDER_CHAR) {
-            break;
-        }
-        offset++;
-    } while (index);
-    
-    return settings.id[offset];
+    uint8_t c = pgm_read_byte(&_template[index]);
+    if (c >= 0xFA) {
+        return settings.id[c - 0xFA];
+    }    
+    return c;
 }
 
 bool identify() {
