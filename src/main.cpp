@@ -10,7 +10,9 @@
 #include "config.h"
 #include <MQTTGateway.h>
 #include <bmp280.h>
-#include "utils.h"
+#include <utils.h>
+#include <Scheduler.h>
+#include <Battery.h>
 
 #define CS_PIN      PIN_PA5
 #define IRQ_PIN     PIN_PA4
@@ -40,37 +42,6 @@ struct SETTINGS {
 } settings;
 
 uint16_t battery_voltage_mv = 0;
-
-uint16_t getBatteryVoltage() {
-    ADC0.CTRLA |= ADC_ENABLE_bm;
-    
-    ADC0.CTRLC = ADC_PRESC_DIV8_gc      // prescaler /8 ← optimal for 1 MHz (125 kHz)
-                | ADC_REFSEL_VDDREF_gc  // Vref = Vcc
-                | 0 << ADC_SAMPCAP_bp;  // sample cap off (default)
-
-    ADC0.MUXPOS = ADC_MUXPOS_INTREF_gc; // input = internal bandgap
-
-    _delay_us(200);
-
-    ADC0.COMMAND = ADC_STCONV_bm;
-    while (ADC0.COMMAND & ADC_STCONV_bm);
-
-    uint16_t adc_value = ADC0.RES;
-    ADC0.CTRLA &= ~ADC_ENABLE_bm;
-
-    if (adc_value == 0) return 0;
-
-    uint32_t voltage = (uint32_t)settings.bandgap * 1024UL / adc_value;
-    return (uint16_t)voltage;
-}
-
-uint8_t calcBatteryLevel(uint16_t voltage_mv) {
-    if (voltage_mv >= 3000) return 100;
-    if (voltage_mv >= 2880) return 100 - (3000 - voltage_mv) / 8; // 3000 mV -> 100%, 2880 mV -> 85%
-    if (voltage_mv >= 2680) return  85 - (2880 - voltage_mv) / 8; // 2880 mV ->  85%, 2680 mV -> 60%
-    if (voltage_mv >= 2200) return  60 - (2680 - voltage_mv) / 8; // 2680 mV ->  60%, 2200 mV -> 0%
-    return 0;
-}
 
 uint8_t renderTemplate(const char* _template, uint16_t index) {
     uint8_t c = pgm_read_byte(&_template[index]);
@@ -103,7 +74,7 @@ void measure() {
     strcat(payload, ",\"v\":");
     strcat(payload, value_str);
 
-    int32ToStrFixedPoint(calcBatteryLevel(battery_voltage_mv), value_str);
+    int32ToStrFixedPoint(Battery::getPercentageLiMnO2_3V(battery_voltage_mv), value_str);
     strcat(payload, ",\"b\":");
     strcat(payload, value_str);
 
@@ -118,7 +89,7 @@ void measure() {
     strcat(payload, "}");
 
     mqtt.publish(state_topic, payload, false);
-    battery_voltage_mv = getBatteryVoltage();
+    battery_voltage_mv = Battery::readMillivolts(settings.bandgap);
 }
 
 void generateUID(char uid[6]) {
@@ -147,31 +118,48 @@ void setupRTC_PIT() {
     RTC.PITINTCTRL = RTC_PI_bm;           // enable interrupt
 }
 
+void enableWDT() {
+    wdt_reset();
+    _PROTECTED_WRITE(WDT.CTRLA, WDT_PERIOD_8KCLK_gc);
+}
+
+void disableWDT() {
+    _PROTECTED_WRITE(WDT.CTRLA, WDT_PERIOD_OFF_gc);
+}
+
 void sleep_delay(uint16_t seconds) {
     uint8_t miso_backup = PORTA.PIN2CTRL;
     uint8_t irq_backup = PORTA.PIN4CTRL;
     PORTA.PIN2CTRL = PORT_ISC_INPUT_DISABLE_gc;
     PORTA.PIN4CTRL = PORT_ISC_INPUT_DISABLE_gc;
 
+    disableWDT();
     while (seconds-- > 0) {
         set_sleep_mode(SLEEP_MODE_PWR_DOWN);
         sleep_mode();
     }
+    enableWDT();
 
     PORTA.PIN2CTRL = miso_backup;
     PORTA.PIN4CTRL = irq_backup;
 }
 
-void setupRadio() {
-    while(!radio.initialize(FREQUENCY, NODEID, NETWORKID))
-        sleep_delay(30);
+void reset() {
+    _PROTECTED_WRITE(RSTCTRL.SWRR, RSTCTRL_SWRE_bm);
+}
+
+bool setupRadio() {
+    if(!radio.initialize(FREQUENCY, NODEID, NETWORKID)) {
+        return false;
+    }
     radio.setPowerLevel(20);
     radio.encrypt(ENCRYPTKEY);
     //radio.setFrequency(433920000); //set frequency to some custom frequency
     radio.sleep();
+    return true;
 }
 
-void setupHardware() {
+void disableUnusedPeripherals() {
     // === 1. Unused pins: disable digital input buffer ===
     PORTA.PIN6CTRL = PORT_ISC_INPUT_DISABLE_gc;
     PORTA.PIN7CTRL = PORT_ISC_INPUT_DISABLE_gc;
@@ -200,8 +188,6 @@ void setupHardware() {
     DAC0.CTRLA = 0;
     DAC1.CTRLA = 0;
     DAC2.CTRLA = 0;
-    
-    VREF.CTRLA = (VREF.CTRLA & ~VREF_ADC0REFSEL_gm) | VREF_ADC0REFSEL_1V1_gc;
 
     // === 5. Configurable Custom Logic ===
     CCL.CTRLA = 0;
@@ -227,49 +213,40 @@ uint16_t ident_counter __attribute__((section(".noinit")));
 uint16_t update_counter;
 
 void setup() {
-    bool isExternalReset = RSTCTRL.RSTFR & (RSTCTRL_EXTRF_bm |
-                                            RSTCTRL_UPDIRF_bm |
-                                            RSTCTRL_PORF_bm |
-                                            RSTCTRL_SWRF_bm);
+    bool isEmergencyReset = RSTCTRL.RSTFR & (RSTCTRL_WDRF_bm | RSTCTRL_BORF_bm);
     RSTCTRL.RSTFR = RSTCTRL.RSTFR;
     sei();
-
-    setupHardware();
+    enableWDT();
+    disableUnusedPeripherals();
     setupRTC_PIT();
     loadSettings();
-    setupRadio();
 
-    while(!sensor.begin()) {
-        sleep_delay(1);
-    };
+    // If reset was caused by power dip or crash, sleep immediately 
+    // to let the buffer capacitor recharge from a weak battery
+    if (isEmergencyReset) {
+        sleep_delay(EMERGENCY_DELAY_PERIOD);
+    }
+
+    if (!setupRadio() || !sensor.begin()) {
+        sleep_delay(30);
+        reset();
+    }
     sensor.setSampling(MODE_FORCED, SAMPLING_X2, SAMPLING_X16, FILTER_OFF, STANDBY_MS_1);
 
-    battery_voltage_mv = getBatteryVoltage();
+    battery_voltage_mv = Battery::readMillivolts(settings.bandgap);
 
-    update_counter = isExternalReset ? 0 : START_DELAY_PERIOD;
-    if (isExternalReset) {
-        ident_counter = 0;
-    } else if (ident_counter == 0 || ident_counter > IDENT_PERIOD) {
-        ident_counter = START_DELAY_PERIOD;
+    // Perform identification and initial measurement only during a normal, clean boot
+    if (!isEmergencyReset) {
+        identify();
+        measure();
     }
+
+    Scheduler::setTimer(measure, UPDATE_PERIOD, true);
+    Scheduler::setTimer(reset, IDENT_PERIOD, true);
 }
 
 void loop() {
-    if (ident_counter == 0) {
-        ident_counter = IDENT_PERIOD;
-        setupRadio();
-        identify();
-    }
-
-    if (update_counter == 0) {
-        update_counter = UPDATE_PERIOD;
-        measure();
-    }
-    radio.sleep();
-
-    uint16_t sleep_time = min(update_counter, ident_counter);
-    update_counter -= sleep_time;
-    ident_counter -= sleep_time;
-
-    sleep_delay(sleep_time);
+    Scheduler::TimerISR();
+    while(Scheduler::processTask());        
+    sleep_delay(1);
 }
