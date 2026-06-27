@@ -54,6 +54,7 @@ uint8_t renderTemplate(const char* _template, uint16_t index) {
 bool identify() {
     return mqtt.send(id_topic, sizeof(id_topic) - 1,
                      id_payload, sizeof(id_payload) - 1, true, renderTemplate);
+    radio.sleep();
 }
 
 void measure() {
@@ -89,6 +90,7 @@ void measure() {
     strcat(payload, "}");
 
     mqtt.publish(state_topic, payload, false);
+    radio.sleep();
     battery_voltage_mv = Battery::readMillivolts(settings.bandgap);
 }
 
